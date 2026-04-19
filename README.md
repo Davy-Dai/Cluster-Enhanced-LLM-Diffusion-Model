@@ -8,9 +8,15 @@
 
 项目融合 **多视图谱聚类 (CoRegMVSC)** 、 **K-Means 聚类** 、**大语言模型 (LLM) 智能体**与 **扩散模型 (Diffusion)** ，实现大规模社交网络信息扩散仿真，基于知乎 ZhihuRec 数据集完成模型训练、推理与全流程实验。
 
-### 参考项目
+### 参考项目和论文
 
 本项目部分框架参考：[Social-Simulation-for-Information-Diffusion](https://github.com/lixinyi22/Social-Simulation-for-Information-Diffusion)
+
+本项目的DiffusionAgent模块实现参考项目和论文：
+
+·***FuxiCTR***：[reczoo/FuxiCTR: A configurable, tunable, and reproducible library for CTR prediction https://fuxictr.github.io](https://github.com/reczoo/FuxiCTR)
+
+·双通道编码框架论文：***《Modeling Information Diffusion With Sequential Interactive Hypergraphs》***
 
 ### 数据集来源
 
@@ -150,11 +156,11 @@ python main.py --mode diffusion --data_path ./data/zhihu --device cuda --diffusi
 
 ```
 data/zhihu
-├── train.json           
-├── dev.json         
+├── train.json         
+├── dev.json       
 ├── test.json   
 ├── answer_info.json
-└── user_info.json             
+└── user_info.json           
 ```
 
 ##### 1.1 交互数据集：train.json/dev.json/test.json
