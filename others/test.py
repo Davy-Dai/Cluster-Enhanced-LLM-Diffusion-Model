@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import logging
 from typing import Dict, List, Tuple, Any, Set
 from sklearn.metrics import (
@@ -19,27 +20,26 @@ logger = logging.getLogger(__name__)
 
 # 路径配置 - 新增output文件夹
 ZHIHU_DATA_DIR = "./data/zhihu"
-INTERIM_DATA_DIR = "./data"
+INTERIM_DATA_DIR = "./data/mvsc"
 OUTPUT_DIR = "./output"  # 所有评估结果存放到此文件夹
 
 # 确保output文件夹存在
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ===================== 所有文件名统一配置（核心修改）=====================
-# 在这里增删改文件名，无需改动下方逻辑
-FILE_CONFIG = {
-    # 知乎原始数据文件
+# ===================== 文件名匹配配置（核心修改）=====================
+# 正则匹配模式：适配新的文件命名规则
+FILE_PATTERNS = {
+    # 知乎原始数据文件（保持不变）
     "train_data": "train.json",
     "dev_data": "dev.json",
     "test_data": "test.json",
     "answer_info": "answer_info.json",
     
-    # 聚类结果文件
-    "kmeans_cluster": "kmeans_results_100.json",
-    "mvc_cluster": "mvc_results_100.json",
+    # 聚类文件正则: 匹配 mvsc{num1}_results_{num2}.json / kmeans{num1}_results_{num2}.json
+    "cluster_pattern": r"^(?P<method>kmeans|mvsc)\d*_results_(?P<num2>\d+)\.json$",
     
-    # LLM种子结果文件名模板（{method}_{num} 会自动替换）
-    "llm_seed_template": "llm_seed_results_{method}_{num}.json"
+    # LLM种子文件正则: 匹配 llm_seed_results_mvsc2_{num1}_{num2}.json 等
+    "llm_seed_pattern": r"^llm_seed_results_(?P<method>\w+)_(?P<num1>\d+)_(?P<num2>\d+)\.json$"
 }
 
 # ================= 辅助函数：直接加载JSON文件 =================
@@ -93,9 +93,9 @@ def build_all_label_map() -> Dict[Tuple[int, int], int]:
     label_map = {}
     # 从配置读取数据集文件名
     data_files = [
-        os.path.join(ZHIHU_DATA_DIR, FILE_CONFIG["train_data"]),
-        os.path.join(ZHIHU_DATA_DIR, FILE_CONFIG["dev_data"]),
-        os.path.join(ZHIHU_DATA_DIR, FILE_CONFIG["test_data"])
+        os.path.join(ZHIHU_DATA_DIR, FILE_PATTERNS["train_data"]),
+        os.path.join(ZHIHU_DATA_DIR, FILE_PATTERNS["dev_data"]),
+        os.path.join(ZHIHU_DATA_DIR, FILE_PATTERNS["test_data"])
     ]
     
     for file_path in data_files:
@@ -137,14 +137,14 @@ def get_unique_user_count(users: List[int]) -> int:
 # ================= 单个种子结果处理 =================
 def process_single_seed(
     method: str,
-    num: int,
+    seed_identifier: str,  # 唯一标识种子的字符串（如 mvc2_100_200）
     llm_file: str,
     label_map: Dict[Tuple[int, int], int],
     ans_topic_map: Dict[int, List[int]],
     user_weight_map: Dict[int, int]
 ) -> Dict[str, Any]:
     """处理单个LLM种子结果，返回该种子的全量统计和按topic的统计"""
-    logger.info(f"正在处理种子: {method}_{num}")
+    logger.info(f"正在处理种子: {seed_identifier}")
     
     # 1. 加载LLM结果并对齐真实标签
     llm_data = load_json_file(llm_file)
@@ -164,7 +164,7 @@ def process_single_seed(
             })
     
     if not valid_samples:
-        logger.warning(f"{method}_{num} 无有效样本，跳过")
+        logger.warning(f"{seed_identifier} 无有效样本，跳过")
         return {}
 
     # 2. 计算全量指标
@@ -224,9 +224,8 @@ def process_single_seed(
 
     # 4. 组装该种子的结果
     seed_result = {
-        "seed_id": f"{method}_{num}",
+        "seed_id": seed_identifier,
         "method": method,
-        "num_clusters": num,
         "overall": overall_metrics,
         "topic_detail": topic_metrics
     }
@@ -234,7 +233,7 @@ def process_single_seed(
 
 # ================= Topic维度汇总 =================
 def summarize_by_topic(all_seed_results: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
-    """按topic_id汇总所有9个种子的指标"""
+    """按topic_id汇总所有种子的指标"""
     topic_summary = {}
     
     # 遍历所有种子结果
@@ -271,54 +270,89 @@ def summarize_by_topic(all_seed_results: List[Dict[str, Any]]) -> Dict[int, Dict
     }
     return sorted_topic_summary
 
+# ================= 辅助函数：批量匹配文件 =================
+def find_matching_files(dir_path: str, pattern: str) -> List[Tuple[re.Match, str]]:
+    """
+    遍历目录，返回所有匹配正则模式的文件
+    返回: [(正则匹配对象, 文件路径), ...]
+    """
+    matching_files = []
+    if not os.path.isdir(dir_path):
+        logger.error(f"目录不存在: {dir_path}")
+        return matching_files
+    
+    for filename in os.listdir(dir_path):
+        match = re.match(pattern, filename)
+        if match:
+            file_path = os.path.join(dir_path, filename)
+            matching_files.append((match, file_path))
+    
+    logger.info(f"在 {dir_path} 找到 {len(matching_files)} 个匹配 {pattern} 的文件")
+    return matching_files
+
 # ================= 主流程 =================
 def main():
-    # 1. 从配置加载基础数据文件路径
-    answer_info_file = os.path.join(ZHIHU_DATA_DIR, FILE_CONFIG["answer_info"])
-    kmeans_cluster_file = os.path.join(INTERIM_DATA_DIR, FILE_CONFIG["kmeans_cluster"])
-    mvc_cluster_file = os.path.join(INTERIM_DATA_DIR, FILE_CONFIG["mvc_cluster"])
-
-    # 加载全量标签（train+dev+test）
+    # 1. 加载基础数据
+    answer_info_file = os.path.join(ZHIHU_DATA_DIR, FILE_PATTERNS["answer_info"])
     label_map = build_all_label_map()
-    # 构建answer-topic映射
     ans_topic_map = build_answer_topic_map(answer_info_file)
-    # 构建用户权重映射
-    user_weight_maps = {
-        "kmeans": build_user_cluster_weight(kmeans_cluster_file),
-        "mvc": build_user_cluster_weight(mvc_cluster_file),
-        "topk": {}  # TopK权重默认为1
-    }
 
-    # 2. 定义9个种子（3方法×3规模），从模板生成文件名
-    #methods = ["kmeans", "mvc", "topk"]
-    methods=["kmeans1000","kmeans1500"]
-    nums = [10, 20, 50]
+    # 2. 批量加载所有聚类文件（适配新命名格式）
+    cluster_files = find_matching_files(INTERIM_DATA_DIR, FILE_PATTERNS["cluster_pattern"])
+    user_weight_maps = {"topk": {}}  # topk默认权重为1
+    for cluster_match, cluster_path in cluster_files:
+        cluster_method = cluster_match.group("method")  # kmeans/mvc
+        cluster_num2 = cluster_match.group("num2")       # num2参数
+        # 构建唯一的method标识（如 kmeans_100 / mvc_200）
+        weight_key = f"{cluster_method}_{cluster_num2}"
+        user_weight_maps[weight_key] = build_user_cluster_weight(cluster_path)
+        logger.info(f"加载聚类权重: {weight_key} -> {cluster_path}")
+
+    # 3. 批量加载所有LLM种子文件（适配新命名格式）
+    llm_seed_files = find_matching_files(INTERIM_DATA_DIR, FILE_PATTERNS["llm_seed_pattern"])
     tasks = []
-    for m in methods:
-        for n in nums:
-            # 使用配置模板生成实际文件名
-            fname = FILE_CONFIG["llm_seed_template"].format(method=m, num=n)
-            fpath = os.path.join(INTERIM_DATA_DIR, fname)
-            if os.path.exists(fpath):
-                tasks.append((m, n, fpath))
-            else:
-                logger.warning(f"种子文件未找到，跳过: {fpath}")
+    for llm_match, llm_path in llm_seed_files:
+        # 提取文件名中的参数
+        llm_method = llm_match.group("method")    # 如 mvc2 / kmeans1000
+        llm_num1 = llm_match.group("num1")        # 第一个数字参数
+        llm_num2 = llm_match.group("num2")        # 第二个数字参数
+        # 构建种子唯一标识（如 mvc2_100_200）
+        seed_id = f"{llm_method}_{llm_num1}_{llm_num2}"
+        
+        # 匹配对应的聚类权重（优先精确匹配，无则用基础kmeans/mvc，最后用topk）
+        weight_key = None
+        # 尝试精确匹配（如 mvc2_100）
+        if f"{llm_method}_{llm_num1}" in user_weight_maps:
+            weight_key = f"{llm_method}_{llm_num1}"
+        # 尝试匹配基础method（如 mvc/kmeans）
+        elif re.match(r"^(kmeans|mvc)", llm_method):
+            base_method = re.match(r"^(kmeans|mvc)", llm_method).group(1)
+            # 找包含该base_method的权重key
+            for key in user_weight_maps:
+                if key.startswith(base_method):
+                    weight_key = key
+                    break
+        # 最终默认用topk
+        if not weight_key:
+            weight_key = "topk"
+        
+        tasks.append((llm_method, seed_id, llm_path, weight_key))
 
-    # 3. 处理所有种子
+    # 4. 处理所有种子
     all_seed_results = []
-    for m, n, fpath in tasks:
+    for llm_method, seed_id, llm_path, weight_key in tasks:
         seed_res = process_single_seed(
-            method=m,
-            num=n,
-            llm_file=fpath,
+            method=llm_method,
+            seed_identifier=seed_id,
+            llm_file=llm_path,
             label_map=label_map,
             ans_topic_map=ans_topic_map,
-            user_weight_map=user_weight_maps.get(m, {})
+            user_weight_map=user_weight_maps.get(weight_key, {})
         )
         if seed_res:
             all_seed_results.append(seed_res)
             # 保存单个种子结果到output文件夹
-            out_file = os.path.join(OUTPUT_DIR, f"seed_eval_{m}_{n}.json")
+            out_file = os.path.join(OUTPUT_DIR, f"seed_eval_{seed_id}.json")
             with open(out_file, 'w', encoding='utf-8') as f:
                 json.dump(seed_res, f, ensure_ascii=False, indent=2)
             logger.info(f"单个种子结果已保存至: {out_file}")
@@ -327,14 +361,14 @@ def main():
         logger.error("无有效种子结果，流程终止")
         return
 
-    # 4. 按Topic汇总所有种子
+    # 5. 按Topic汇总所有种子
     topic_summary = summarize_by_topic(all_seed_results)
     topic_summary_file = os.path.join(OUTPUT_DIR, "topic_wise_summary.json")
     with open(topic_summary_file, 'w', encoding='utf-8') as f:
         json.dump(topic_summary, f, ensure_ascii=False, indent=2)
     logger.info(f"Topic维度汇总结果已保存至: {topic_summary_file}")
 
-    # 5. 保存全量汇总结果
+    # 6. 保存全量汇总结果
     summary_file = os.path.join(OUTPUT_DIR, "all_seeds_summary.json")
     with open(summary_file, 'w', encoding='utf-8') as f:
         json.dump(all_seed_results, f, ensure_ascii=False, indent=2)
