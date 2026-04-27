@@ -156,11 +156,11 @@ python main.py --mode diffusion --data_path ./data/zhihu --device cuda --diffusi
 
 ```
 data/zhihu
-├── train.json         
-├── dev.json       
+├── train.json       
+├── dev.json     
 ├── test.json   
 ├── answer_info.json
-└── user_info.json           
+└── user_info.json         
 ```
 
 ##### 1.1 交互数据集：train.json/dev.json/test.json
@@ -261,3 +261,7 @@ LLM 种子节点输出文件，扩散模型输入
 本项目可用于**学术研究，若借鉴项目请引用。**
 
 联系作者——daijt3@mail2.sysu.edu.cn或704048706@qq.com。
+
+## 版本更新说明
+
+2026.4.27  增加数据处理程序 `other/data2.py`，用来按照answer的种类进行划分，将20个answer种类划分成16/2/2的数据集。
